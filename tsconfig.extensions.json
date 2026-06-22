@@ -1,0 +1,14 @@
+{
+	"extends": "./tsconfig.json",
+	"include": [
+		"packages/*/src/**/*",
+		"packages/*/test/**/*",
+		"packages/coding-agent/examples/**/*",
+		".pi/extensions/aris-review.ts",
+		".pi/extensions/research-checkpoint.ts",
+		".pi/extensions/research-kernel.ts",
+		".pi/extensions/research-memory.ts",
+		".pi/extensions/arxiv-tools.ts",
+		".pi/extensions/web-search.ts"
+	]
+}
