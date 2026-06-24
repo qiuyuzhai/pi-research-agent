@@ -8,6 +8,7 @@
 		".pi/extensions/research-checkpoint.ts",
 		".pi/extensions/research-kernel.ts",
 		".pi/extensions/research-memory.ts",
+		".pi/extensions/_lib/embedding.ts",
 		".pi/extensions/arxiv-tools.ts",
 		".pi/extensions/web-search.ts"
 	]
