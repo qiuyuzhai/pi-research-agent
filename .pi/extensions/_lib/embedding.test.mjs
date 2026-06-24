@@ -72,7 +72,7 @@ function withEnv(overrides, fn) {
 console.log("\n[1] cosine");
 assert("正交向量 = 0", cosine([1, 0], [0, 1]), 0);
 assert("同向量 = 1", cosine([1, 2, 3], [1, 2, 3]), 1);
-assertApprox("平行向量 ≈ 1", cosine([1, 2], [2, 4]), 1);
+assert("平行向量 = 1", cosine([1, 2], [2, 4]), 1);
 assertApprox("已知值 [1,1]·[1,0] = 1/√2", cosine([1, 1], [1, 0]), 1 / Math.sqrt(2));
 assert("空向量守卫 = 0", cosine([], []), 0);
 assert("长度不等守卫 = 0", cosine([1, 2], [1, 2, 3]), 0);

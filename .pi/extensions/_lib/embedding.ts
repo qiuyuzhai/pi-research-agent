@@ -57,7 +57,7 @@ export function cosine(a: number[], b: number[]): number {
 		nb += b[i] * b[i];
 	}
 	if (na === 0 || nb === 0) return 0;
-	return dot / (Math.sqrt(na) * Math.sqrt(nb));
+	return dot / Math.sqrt(na * nb);
 }
 
 export function hybridScore(
