@@ -196,6 +196,13 @@ async function main() {
   console.log("=== FR-4 实验记忆 M_E mock-provider live 测试 ===");
   console.log(`(HOME=${TMP_HOME}; 零真实 embedding 模型 / 零真实 LLM)\n`);
 
+  // 启动桩 embedding server 并指向它（resolveEmbeddingProvider 在 CALL 时读 env）
+  await new Promise((r) => embedServer.listen(0, "127.0.0.1", r));
+  const embedPort = embedServer.address().port;
+  process.env.OPENAI_BASE_URL = `http://127.0.0.1:${embedPort}/v1`;
+  process.env.EMBEDDING_MODEL = "fake-embed";
+  delete process.env.OPENAI_API_KEY;
+
   // ───────────────────────────────────────────────────────────────────────────
   // S1: parseKernelResult 纯解析（formatResult 文本 → outcome/stdout/durationMs）
   // ───────────────────────────────────────────────────────────────────────────
@@ -244,6 +251,89 @@ async function main() {
     check("非 JSON → null", parseExtractionResponse("totally not json") === null, "");
     const dropped = parseExtractionResponse('{"key_metrics":{"good":1,"bad":[1,2]}}');
     check("key_metrics 仅留 number|string", JSON.stringify(dropped?.key_metrics) === JSON.stringify({ good: 1 }), JSON.stringify(dropped));
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // S3: 自动归档成功实验（钩子 → LLM 抽取 → embed → 写 jsonl）
+  // ───────────────────────────────────────────────────────────────────────────
+  section("[S3] tool_result 钩子自动归档成功实验 + embedding");
+  {
+    clearME();
+    llmQueue = [extractionMsg({ title: "GD demo", summary: "gradient descent converged", key_metrics: { loss: 0.12 }, tags: ["gradient", "descent"] })];
+    llmCallCount = 0;
+    llmCaptured.length = 0;
+    const code = "for i in range(100): w -= lr * grad  # gradient descent";
+    await fireToolResult({ code, text: "step 99 loss=0.12\n=> None  (NoneType)\n[ok, 88ms]" });
+    const rows = readME();
+    check("写入 1 条", rows.length === 1, `len=${rows.length}`);
+    const e = rows[0];
+    check("source=auto", e?.source === "auto", JSON.stringify(e?.source));
+    check("outcome=success", e?.outcome === "success", JSON.stringify(e?.outcome));
+    check("title 来自 LLM", e?.title === "GD demo", JSON.stringify(e?.title));
+    check("key_metrics.loss=0.12", e?.key_metrics?.loss === 0.12, JSON.stringify(e?.key_metrics));
+    check("durationMs=88", e?.durationMs === 88, JSON.stringify(e?.durationMs));
+    check("codeHash 非空", typeof e?.codeHash === "string" && e.codeHash.length > 0, "");
+    check("embedding 已写入(dim=6)", Array.isArray(e?.embedding) && e.embedding.length === 6, JSON.stringify(e?.embedding));
+    check("embeddingModel=fake-embed", e?.embeddingModel === "fake-embed", JSON.stringify(e?.embeddingModel));
+    // 反假绿：LLM 真被调用且收到 CODE/OUTPUT
+    check("LLM 被调用 1 次", llmCallCount === 1, `count=${llmCallCount}`);
+    check("反假绿: 抽取 ctx 含 code 原文", (llmCaptured[0]?.messages?.[0]?.content ?? "").includes("gradient descent"), "");
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // S4: 精确去重（同 codeHash 第二次 → 不重复写）
+  // ───────────────────────────────────────────────────────────────────────────
+  section("[S4] 同代码二次归档去重");
+  {
+    clearME();
+    llmQueue = [extractionMsg({ title: "dup", summary: "s", key_metrics: {}, tags: [] }), extractionMsg({ title: "dup2", summary: "s2", key_metrics: {}, tags: [] })];
+    const code = "print('same code')";
+    await fireToolResult({ code, text: "same code\n[ok, 5ms]" });
+    await fireToolResult({ code, text: "same code\n[ok, 6ms]" });
+    check("去重后仅 1 条", readME().length === 1, `len=${readME().length}`);
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // S5: 失败实验也归档（outcome=failure）
+  // ───────────────────────────────────────────────────────────────────────────
+  section("[S5] 失败实验归档");
+  {
+    clearME();
+    llmQueue = [extractionMsg({ title: "boom", summary: "raised ValueError", key_metrics: {}, tags: ["bug"] })];
+    await fireToolResult({ code: "raise ValueError('x')", text: "Traceback...\nValueError: x\n[error: ValueError, 12ms]" });
+    const rows = readME();
+    check("写入 1 条", rows.length === 1, `len=${rows.length}`);
+    check("outcome=failure", rows[0]?.outcome === "failure", JSON.stringify(rows[0]?.outcome));
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // S6: RUNNING / 非 run_python 不归档
+  // ───────────────────────────────────────────────────────────────────────────
+  section("[S6] RUNNING 与非 run_python 跳过");
+  {
+    clearME();
+    llmQueue = [];
+    await fireToolResult({ code: "x=1", text: "RUNNING: job did not finish within 60s.\njob_id=job-9" });
+    check("RUNNING → 不归档", readME().length === 0, `len=${readME().length}`);
+    await fireToolResult({ code: "x=1", text: "x\n[ok, 1ms]", toolName: "web_search" });
+    check("非 run_python → 不归档", readME().length === 0, `len=${readME().length}`);
+
+    // ⑥ 钩子内部异常被吞掉，绝不向上抛（run_python 结果照常返回 agent）
+    clearME();
+    const evilCtx = {
+      get model() {
+        throw new Error("boom");
+      },
+      signal: undefined,
+    };
+    let threw = false;
+    try {
+      await fireToolResult({ code: "y=1", text: "y\n[ok, 1ms]", ctx: evilCtx });
+    } catch {
+      threw = true;
+    }
+    check("钩子吞掉内部异常（不抛）", threw === false, "");
+    check("异常路径未写入 M_E", readME().length === 0, `len=${readME().length}`);
   }
 
   cleanupAndExit();

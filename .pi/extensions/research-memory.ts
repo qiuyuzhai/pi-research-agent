@@ -197,6 +197,103 @@ export function parseExtractionResponse(text: string): Extraction | null {
 	return out;
 }
 
+// ── FR-4: 通用超时包装（绝不抛；超时/失败返回 fallback）──
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+	return new Promise<T>((resolve) => {
+		const timer = setTimeout(() => resolve(fallback), ms);
+		if (typeof (timer as { unref?: () => void }).unref === "function") {
+			(timer as { unref?: () => void }).unref?.();
+		}
+		p.then(
+			(v) => {
+				clearTimeout(timer);
+				resolve(v);
+			},
+			() => {
+				clearTimeout(timer);
+				resolve(fallback);
+			},
+		);
+	});
+}
+
+const ARCHIVE_TIMEOUT_MS = 5000;
+
+// 自动归档单条实验。embed/LLM 失败或超时绝不抛；同 codeHash 已存在则跳过（返回 null）。
+export async function archiveExperiment(
+	code: string,
+	parsed: KernelOutcome,
+	model: ExtensionContext["model"],
+	signal: AbortSignal | undefined,
+): Promise<ExperimentEntry | null> {
+	const hash = codeHash(code);
+	const existing = loadEntries<ExperimentEntry>(M_E_FILE);
+	if (existing.some((e) => e.codeHash === hash)) return null;
+
+	// (1) LLM 抽取（带超时，绝不阻断）
+	let extraction: Extraction | null = null;
+	if (model) {
+		extraction = await withTimeout(
+			(async (): Promise<Extraction | null> => {
+				try {
+					const res = await completeSimple(model, buildExtractionContext(code, parsed.stdout), { signal });
+					if (res.stopReason === "error" || res.stopReason === "aborted") return null;
+					const txt = res.content
+						.filter((b): b is TextContent => b.type === "text")
+						.map((b) => b.text)
+						.join("\n");
+					return parseExtractionResponse(txt);
+				} catch {
+					return null;
+				}
+			})(),
+			ARCHIVE_TIMEOUT_MS,
+			null,
+		);
+	}
+
+	const title = extraction?.title?.trim() || `Experiment ${new Date().toISOString().slice(0, 19)}`;
+	const description =
+		extraction?.summary?.trim() || parsed.stdout.split("\n")[0]?.slice(0, 120) || "(no output)";
+	const tags = extraction?.tags ?? [];
+	const key_metrics = extraction?.key_metrics;
+
+	// (2) embedding（embed 内置 5s 超时，绝不抛）
+	let embedding: number[] | undefined;
+	let embeddingModel: string | undefined;
+	let embeddingDim: number | undefined;
+	const provider = resolveEmbeddingProvider();
+	if (provider) {
+		const r = await embed(buildEmbedText({ title, description, key_metrics, tags }), provider, signal);
+		if (r) {
+			embedding = r.vector;
+			embeddingModel = r.model;
+			embeddingDim = r.dim;
+		}
+	}
+
+	const entry: ExperimentEntry = {
+		id: generateId("exp"),
+		timestamp: new Date().toISOString(),
+		title,
+		description,
+		code,
+		result: extraction?.summary,
+		outcome: parsed.outcome,
+		tags,
+		source: "auto",
+		stdout: parsed.stdout.slice(0, EXTRACTION_CLIP),
+		durationMs: parsed.durationMs,
+		key_metrics,
+		codeHash: hash,
+		embedding,
+		embeddingModel,
+		embeddingDim,
+	};
+	writeEntry(M_E_FILE, entry);
+	return entry;
+}
+
 function scoreRelevance<T extends { content?: string; description?: string; title?: string; tags?: string[] }>(
 	entry: T,
 	terms: string[],
@@ -265,6 +362,25 @@ export default function researchMemoryExtension(pi: ExtensionAPI) {
 		return {
 			systemPrompt: `${event.systemPrompt}\n\n${ctx}`,
 		};
+	});
+
+	// ── FR-4: run_python 完成后自动归档到 M_E（全程 try/catch，绝不阻断/弄崩工具结果）──
+	pi.on("tool_result", async (event, ctx) => {
+		try {
+			if (event.toolName !== "run_python") return;
+			const code = typeof event.input["code"] === "string" ? (event.input["code"] as string) : undefined;
+			if (!code) return;
+			const text = event.content
+				.filter((b): b is TextContent => b.type === "text")
+				.map((b) => b.text)
+				.join("\n");
+			const parsed = parseKernelResult(text, event.isError);
+			if (!parsed) return;
+			await archiveExperiment(code, parsed, ctx.model, ctx.signal);
+		} catch {
+			// 自动归档绝不能拖崩 run_python 结果；吞掉一切异常。
+		}
+		// 不修改 tool_result（归档是纯副作用）→ 返回 undefined
 	});
 
 	pi.registerTool({
