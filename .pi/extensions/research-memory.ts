@@ -87,6 +87,12 @@ function writeEntry(filePath: string, entry: unknown) {
 	appendFileSync(filePath, `${JSON.stringify(entry)}\n`);
 }
 
+// 全量覆盖重写 M_E（mark_best / reembed 用；保持每行一条 JSON）。
+function rewriteExperiments(entries: ExperimentEntry[]) {
+	ensureDir();
+	writeFileSync(M_E_FILE, entries.length ? `${entries.map((e) => JSON.stringify(e)).join("\n")}\n` : "");
+}
+
 function generateId(prefix: string): string {
 	return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
@@ -553,6 +559,31 @@ export default function researchMemoryExtension(pi: ExtensionAPI) {
 				};
 			}
 			return { content: [{ type: "text", text: formatExperimentHits(hits) }], details: undefined };
+		},
+	});
+
+	pi.registerTool({
+		name: "mark_best_experiment",
+		label: "Mark Best Experiment (M_E)",
+		description:
+			"Mark an archived experiment as a best / reference implementation by its id (from query_memory). " +
+			"Best experiments are prioritized (★) in query_memory results. Multiple experiments may be marked best.",
+		parameters: Type.Object({
+			id: Type.String({ description: "The experiment id to mark as best." }),
+		}),
+		async execute(_id, params) {
+			const experiments = loadEntries<ExperimentEntry>(M_E_FILE);
+			const target = experiments.find((e) => e.id === params.id);
+			if (!target) {
+				return {
+					content: [{ type: "text", text: `No experiment with id=${params.id} in M_E.` }],
+					details: undefined,
+					isError: true,
+				};
+			}
+			target.is_best = true;
+			rewriteExperiments(experiments);
+			return { content: [{ type: "text", text: `Marked best: ${target.title} (${target.id})` }], details: undefined };
 		},
 	});
 

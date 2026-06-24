@@ -405,6 +405,28 @@ async function main() {
     check("description 回退为 stdout 首行", (rows[0]?.description ?? "").includes("sorted=[1,2,3]"), JSON.stringify(rows[0]?.description));
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // S11: mark_best_experiment → is_best=true → query 前置（★）
+  // ───────────────────────────────────────────────────────────────────────────
+  section("[S11] mark_best_experiment 标记 + 检索前置");
+  {
+    clearME();
+    seedEntry({ id: "exp-a", timestamp: "t", title: "sort approach A", description: "bubble sort", outcome: "success", tags: ["sort"], source: "auto", code: "a()" });
+    seedEntry({ id: "exp-b", timestamp: "t", title: "sort approach B", description: "quick sort", outcome: "success", tags: ["sort"], source: "auto", code: "b()" });
+    const mark = await tools["mark_best_experiment"].execute("c", { id: "exp-b" }, undefined, () => {}, mockCtx);
+    check("标记成功（非 isError）", !mark?.isError, JSON.stringify(mark?.isError));
+    check("jsonl 中 exp-b.is_best=true", readME().find((x) => x.id === "exp-b")?.is_best === true, "");
+    check("jsonl 中 exp-a.is_best 未设", !readME().find((x) => x.id === "exp-a")?.is_best, "");
+    // 检索：bestBoost 让 exp-b 前置
+    const res = await tools["query_memory"].execute("c", { query: "sort", limit: 5 }, undefined, () => {}, mockCtx);
+    const text = res?.content?.[0]?.text ?? "";
+    check("★ 标记出现在 exp-b", text.includes("★"), text);
+    check("exp-b 排在 exp-a 之前", text.indexOf("approach B") < text.indexOf("approach A"), text);
+    // 不存在的 id
+    const miss = await tools["mark_best_experiment"].execute("c", { id: "nope" }, undefined, () => {}, mockCtx);
+    check("未知 id → isError", miss?.isError === true, JSON.stringify(miss?.isError));
+  }
+
   cleanupAndExit();
 }
 
