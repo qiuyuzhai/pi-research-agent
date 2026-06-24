@@ -72,8 +72,22 @@ export function hybridScore(
 	return base + (isBest ? weights.bestBoost : 0);
 }
 
-export function codeHash(_code: string): string {
-	throw new Error("not implemented: codeHash");
+export function codeHash(code: string): string {
+	// 规范化：统一换行 → 去每行行尾空白 → 折叠连续空行 → 整体 trim。
+	// 刻意保留行首缩进（Python 语义性），避免把不同程序误判为重复。
+	const normalized = code
+		.replace(/\r\n/g, "\n")
+		.split("\n")
+		.map((l) => l.replace(/[ \t]+$/g, ""))
+		.join("\n")
+		.replace(/\n{2,}/g, "\n")
+		.trim();
+	// DJB2 哈希，确定性、无依赖。
+	let h = 5381;
+	for (let i = 0; i < normalized.length; i++) {
+		h = ((h << 5) + h + normalized.charCodeAt(i)) >>> 0;
+	}
+	return h.toString(16);
 }
 
 // EMBED_TIMEOUT_MS 在 embed 实现后引用；此处显式 void 防 unused（实现 embed 时移除）。

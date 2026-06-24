@@ -95,6 +95,27 @@ assert(
   0.7,
 );
 
+// ── [3] codeHash ─────────────────────────────────────────────────────────────
+console.log("\n[3] codeHash");
+assert("确定性：同输入同 hash", codeHash("x = 1\ny = 2"), codeHash("x = 1\ny = 2"));
+assert(
+  "行尾空白不影响",
+  codeHash("x = 1  \ny = 2\t"),
+  codeHash("x = 1\ny = 2"),
+);
+assert(
+  "空行折叠不影响",
+  codeHash("x = 1\n\n\ny = 2"),
+  codeHash("x = 1\ny = 2"),
+);
+assertTrue("不同代码 → 不同 hash", codeHash("x = 1") !== codeHash("x = 2"));
+// 行首缩进是 Python 语义 → 必须区分（刻意偏离 spec 字面）
+assertTrue(
+  "行首缩进有意义（不同 hash）",
+  codeHash("if x:\n    y = 1") !== codeHash("if x:\ny = 1"),
+);
+assertTrue("hash 是非空字符串", typeof codeHash("x=1") === "string" && codeHash("x=1").length > 0);
+
 // ── 汇总 ──────────────────────────────────────────────────────────────────────
 const total = passed + failed;
 console.log("\n" + "─".repeat(50));
