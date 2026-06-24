@@ -137,6 +137,66 @@ export function parseKernelResult(text: string, isError: boolean): KernelOutcome
 	return { outcome: "inconclusive", stdout: trimmed };
 }
 
+// ── FR-4: LLM 抽取（一次 completeSimple 同时产出 summary + key_metrics + title + tags）──
+const EXTRACTION_SYSTEM_PROMPT = `You extract structured metadata from a Python experiment run. Given CODE and OUTPUT, respond with ONLY a single JSON object (no markdown fences, no prose) of shape:
+{"title": string, "summary": string, "key_metrics": {<name>: number|string, ...}, "tags": string[]}
+- title: <= 8 words naming what the experiment does.
+- summary: one sentence on what happened / what the result means.
+- key_metrics: numeric or short scalar results parsed from OUTPUT (loss, accuracy, runtime, p_value, ...). Empty object if none.
+- tags: 2-5 lowercase keywords (method / domain).`;
+
+const EXTRACTION_CLIP = 4000;
+
+export function buildExtractionContext(code: string, stdout: string): Context {
+	const clip = (s: string) => (s.length > EXTRACTION_CLIP ? `${s.slice(0, EXTRACTION_CLIP)}\n...[truncated]` : s);
+	return {
+		systemPrompt: EXTRACTION_SYSTEM_PROMPT,
+		messages: [
+			{
+				role: "user",
+				content: `CODE:\n${clip(code)}\n\nOUTPUT:\n${clip(stdout)}`,
+				timestamp: Date.now(),
+			},
+		],
+	};
+}
+
+export interface Extraction {
+	title?: string;
+	summary?: string;
+	key_metrics?: Record<string, number | string>;
+	tags?: string[];
+}
+
+// 容错解析 LLM 文本（可能带 ```json``` 围栏或前后杂质）；失败返 null。
+export function parseExtractionResponse(text: string): Extraction | null {
+	const fenced = text.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
+	const raw = (fenced ? fenced[1] : text).trim();
+	const start = raw.indexOf("{");
+	const end = raw.lastIndexOf("}");
+	if (start === -1 || end === -1 || end <= start) return null;
+	let obj: unknown;
+	try {
+		obj = JSON.parse(raw.slice(start, end + 1));
+	} catch {
+		return null;
+	}
+	if (typeof obj !== "object" || obj === null) return null;
+	const o = obj as Record<string, unknown>;
+	const out: Extraction = {};
+	if (typeof o["title"] === "string") out.title = o["title"];
+	if (typeof o["summary"] === "string") out.summary = o["summary"];
+	if (o["key_metrics"] && typeof o["key_metrics"] === "object" && !Array.isArray(o["key_metrics"])) {
+		const m: Record<string, number | string> = {};
+		for (const [k, v] of Object.entries(o["key_metrics"] as Record<string, unknown>)) {
+			if (typeof v === "number" || typeof v === "string") m[k] = v;
+		}
+		out.key_metrics = m;
+	}
+	if (Array.isArray(o["tags"])) out.tags = (o["tags"] as unknown[]).filter((t): t is string => typeof t === "string");
+	return out;
+}
+
 function scoreRelevance<T extends { content?: string; description?: string; title?: string; tags?: string[] }>(
 	entry: T,
 	terms: string[],

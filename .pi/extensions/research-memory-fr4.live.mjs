@@ -219,6 +219,33 @@ async function main() {
     check("空文本 → null", parseKernelResult("   ", false) === null, "");
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // S2: buildExtractionContext / parseExtractionResponse 纯逻辑
+  // ───────────────────────────────────────────────────────────────────────────
+  section("[S2] LLM 抽取上下文构造 + 响应解析");
+  {
+    const ctx = buildExtractionContext("print(loss)", "loss=0.23");
+    check("ctx.systemPrompt 非空", typeof ctx.systemPrompt === "string" && ctx.systemPrompt.length > 0, "");
+    const user = ctx.messages?.[0]?.content ?? "";
+    check("user content 含 CODE 原文", user.includes("print(loss)"), user.slice(0, 120));
+    check("user content 含 OUTPUT 原文", user.includes("loss=0.23"), user.slice(0, 120));
+    check("messages[0].role=user", ctx.messages?.[0]?.role === "user", "");
+
+    const parsed = parseExtractionResponse(
+      '```json\n{"title":"GD test","summary":"loss converged","key_metrics":{"loss":0.23},"tags":["optim"]}\n```',
+    );
+    check("解析带围栏 JSON：title", parsed?.title === "GD test", JSON.stringify(parsed));
+    check("解析：key_metrics.loss=0.23", parsed?.key_metrics?.loss === 0.23, JSON.stringify(parsed));
+    check("解析：tags", JSON.stringify(parsed?.tags) === JSON.stringify(["optim"]), JSON.stringify(parsed));
+
+    const bare = parseExtractionResponse('prefix {"title":"X","key_metrics":{"acc":0.9}} suffix');
+    check("解析裸 JSON（前后有杂质）：title=X", bare?.title === "X", JSON.stringify(bare));
+
+    check("非 JSON → null", parseExtractionResponse("totally not json") === null, "");
+    const dropped = parseExtractionResponse('{"key_metrics":{"good":1,"bad":[1,2]}}');
+    check("key_metrics 仅留 number|string", JSON.stringify(dropped?.key_metrics) === JSON.stringify({ good: 1 }), JSON.stringify(dropped));
+  }
+
   cleanupAndExit();
 }
 
