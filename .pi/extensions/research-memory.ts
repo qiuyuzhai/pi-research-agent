@@ -643,4 +643,30 @@ export default function researchMemoryExtension(pi: ExtensionAPI) {
 			ctx.ui.notify("M_E cleared.", "info");
 		},
 	});
+
+	pi.registerCommand("memory-reembed", {
+		description: "Backfill embeddings for M_E entries missing/mismatched vectors (run after starting an embedding service).",
+		async handler(_args, ctx) {
+			const provider = resolveEmbeddingProvider();
+			if (!provider) {
+				ctx.ui.notify("No embedding service configured (set OPENAI_BASE_URL + EMBEDDING_MODEL).", "warning");
+				return;
+			}
+			const experiments = loadEntries<ExperimentEntry>(M_E_FILE);
+			let updated = 0;
+			for (const e of experiments) {
+				const needs = !e.embedding || e.embeddingModel !== provider.model;
+				if (!needs) continue;
+				const r = await embed(buildEmbedText(e), provider, ctx.signal);
+				if (r) {
+					e.embedding = r.vector;
+					e.embeddingModel = r.model;
+					e.embeddingDim = r.dim;
+					updated++;
+				}
+			}
+			rewriteExperiments(experiments);
+			ctx.ui.notify(`Re-embedded ${updated}/${experiments.length} M_E entries with ${provider.model}.`, "info");
+		},
+	});
 }

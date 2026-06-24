@@ -427,6 +427,26 @@ async function main() {
     check("未知 id → isError", miss?.isError === true, JSON.stringify(miss?.isError));
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // S12: /memory-reembed 回填空/不匹配向量
+  // ───────────────────────────────────────────────────────────────────────────
+  section("[S12] /memory-reembed 回填向量");
+  {
+    clearME();
+    // 一条无向量、一条旧模型向量
+    seedEntry({ id: "exp-noemb", timestamp: "t", title: "gradient run no embed", description: "gradient descent", outcome: "success", tags: ["gradient"], source: "auto", code: "g()" });
+    seedEntry({ id: "exp-oldemb", timestamp: "t", title: "old model embed", description: "fourier", outcome: "success", tags: ["fourier"], source: "auto", code: "o()", embedding: [9, 9], embeddingModel: "stale", embeddingDim: 2 });
+    notifications.length = 0;
+    await commands["memory-reembed"].handler("", mockCtx);
+    const rows = readME();
+    const a = rows.find((x) => x.id === "exp-noemb");
+    const b = rows.find((x) => x.id === "exp-oldemb");
+    check("无向量条目被回填(dim=6)", Array.isArray(a?.embedding) && a.embedding.length === 6, JSON.stringify(a?.embedding));
+    check("回填用 fake-embed 模型", a?.embeddingModel === "fake-embed", JSON.stringify(a?.embeddingModel));
+    check("旧模型向量被刷新(dim=6, model=fake-embed)", b?.embeddingDim === 6 && b?.embeddingModel === "fake-embed", JSON.stringify(b?.embeddingModel));
+    check("notify 报告回填数", notifications.some((n) => n.includes("Re-embedded 2")), JSON.stringify(notifications));
+  }
+
   cleanupAndExit();
 }
 
