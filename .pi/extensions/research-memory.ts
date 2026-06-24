@@ -11,7 +11,10 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { completeSimple } from "@earendil-works/pi-ai";
+import type { Context, TextContent } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { codeHash, cosine, embed, hybridScore, resolveEmbeddingProvider } from "./_lib/embedding.ts";
 
 const MEMORY_DIR = join(homedir(), ".pi", "research-memory");
 const M_I_FILE = join(MEMORY_DIR, "episodic.jsonl");
@@ -36,6 +39,7 @@ type EpisodicEntry = {
 type ExperimentOutcome = "success" | "failure" | "inconclusive";
 
 type ExperimentEntry = {
+	// ——— 现有字段，保留不动 ———
 	id: string;
 	timestamp: string;
 	title: string;
@@ -45,6 +49,17 @@ type ExperimentEntry = {
 	result?: string;
 	outcome: ExperimentOutcome;
 	tags: string[];
+
+	// ——— FR-4 新增（全部可选 → 老 jsonl 零迁移可读）———
+	source?: "auto" | "manual";
+	stdout?: string;
+	durationMs?: number;
+	key_metrics?: Record<string, number | string>;
+	is_best?: boolean;
+	codeHash?: string;
+	embedding?: number[];
+	embeddingModel?: string;
+	embeddingDim?: number;
 };
 
 function ensureDir() {
@@ -74,6 +89,22 @@ function writeEntry(filePath: string, entry: unknown) {
 
 function generateId(prefix: string): string {
 	return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+// ── FR-4: embedding 源文本 —— 从已存字段重组，换模型时 /memory-reembed 可重算，无需另存 ──
+export function buildEmbedText(
+	e: Pick<ExperimentEntry, "title" | "description" | "key_metrics" | "tags">,
+): string {
+	const parts: string[] = [e.title, e.description];
+	if (e.key_metrics && Object.keys(e.key_metrics).length > 0) {
+		parts.push(
+			Object.entries(e.key_metrics)
+				.map(([k, v]) => `${k}=${v}`)
+				.join(", "),
+		);
+	}
+	if (e.tags && e.tags.length > 0) parts.push(e.tags.join(", "));
+	return parts.filter((p) => p && p.trim()).join(". ");
 }
 
 function scoreRelevance<T extends { content?: string; description?: string; title?: string; tags?: string[] }>(
