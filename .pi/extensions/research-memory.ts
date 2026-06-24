@@ -294,6 +294,68 @@ export async function archiveExperiment(
 	return entry;
 }
 
+// ── FR-4: hybrid 検索 M_E（関键词永远在线作基线，语义作增强）──
+export async function hybridSearchExperiments(
+	query: string,
+	limit: number,
+	signal: AbortSignal | undefined,
+): Promise<ExperimentEntry[]> {
+	const experiments = loadEntries<ExperimentEntry>(M_E_FILE);
+	if (experiments.length === 0) return [];
+
+	const terms = query
+		.toLowerCase()
+		.split(/\W+/)
+		.filter((t) => t.length > 2)
+		.slice(0, RELEVANCE_TERMS_LIMIT);
+	const maxKw = Math.max(1, terms.length);
+
+	// 查询向量（provider 不可用 / 失败 → null → 退纯关键词）
+	let queryVec: number[] | null = null;
+	let queryModel: string | null = null;
+	const provider = resolveEmbeddingProvider();
+	if (provider) {
+		const r = await embed(query, provider, signal);
+		if (r) {
+			queryVec = r.vector;
+			queryModel = r.model;
+		}
+	}
+
+	const scored = experiments.map((e) => {
+		const kwNorm = terms.length === 0 ? 0 : scoreRelevance(e, terms) / maxKw;
+		let sem: number | null = null;
+		// 仅当查询向量存在且条目向量同模型同维度才算语义分（防 cosine 崩）
+		if (queryVec && e.embedding && e.embeddingModel === queryModel && e.embeddingDim === queryVec.length) {
+			sem = cosine(queryVec, e.embedding);
+		}
+		return { entry: e, score: hybridScore(kwNorm, sem, e.is_best === true) };
+	});
+
+	const hits = scored
+		.filter(({ score }) => score > 0)
+		.sort((a, b) => b.score - a.score)
+		.slice(0, limit)
+		.map(({ entry }) => entry);
+
+	// 查询无有效 term 且无语义命中时，回退最近 limit 条（与 selectRelevant 行为一致）
+	if (hits.length === 0 && terms.length === 0) return experiments.slice(-limit);
+	return hits;
+}
+
+function formatExperimentHits(hits: ExperimentEntry[]): string {
+	const blocks = hits.map((e, i) => {
+		const lines = [`[${i + 1}] ${e.is_best ? "★ " : ""}[${e.outcome}] ${e.title}`, `    ${e.description}`];
+		if (e.key_metrics && Object.keys(e.key_metrics).length > 0) {
+			lines.push(`    metrics: ${Object.entries(e.key_metrics).map(([k, v]) => `${k}=${v}`).join(", ")}`);
+		}
+		lines.push(`    id: ${e.id}`);
+		if (e.code) lines.push(`    code:\n${e.code.split("\n").map((l) => `      ${l}`).join("\n")}`);
+		return lines.join("\n");
+	});
+	return blocks.join("\n\n");
+}
+
 function scoreRelevance<T extends { content?: string; description?: string; title?: string; tags?: string[] }>(
 	entry: T,
 	terms: string[],
@@ -467,6 +529,30 @@ export default function researchMemoryExtension(pi: ExtensionAPI) {
 				content: [{ type: "text", text: `[M_E] Saved [${entry.outcome}] ${entry.title}` }],
 				details: undefined,
 			};
+		},
+	});
+
+	pi.registerTool({
+		name: "query_memory",
+		label: "Query Experiment Memory (M_E, semantic)",
+		description:
+			"Search past experiments by meaning (semantic + keyword hybrid). Returns the most relevant archived " +
+			"experiments with their code and key metrics. Best implementations (★) are prioritized. " +
+			"Call before re-running similar work to reuse or compare prior results.",
+		parameters: Type.Object({
+			query: Type.String({ description: "What you're looking for (natural language)." }),
+			limit: Type.Optional(Type.Number({ description: "Max results (default 5)." })),
+		}),
+		async execute(_id, params, signal) {
+			const limit = params.limit ?? 5;
+			const hits = await hybridSearchExperiments(params.query, limit, signal);
+			if (hits.length === 0) {
+				return {
+					content: [{ type: "text", text: `No matching experiments in M_E for: "${params.query}"` }],
+					details: undefined,
+				};
+			}
+			return { content: [{ type: "text", text: formatExperimentHits(hits) }], details: undefined };
 		},
 	});
 

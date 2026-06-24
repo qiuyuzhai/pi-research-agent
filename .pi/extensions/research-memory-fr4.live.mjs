@@ -336,6 +336,75 @@ async function main() {
     check("异常路径未写入 M_E", readME().length === 0, `len=${readME().length}`);
   }
 
+  // 辅助：直接造一条 M_E 记录（绕过钩子，用于检索/降级场景）
+  function seedEntry(e) {
+    writeFileSync(M_E_FILE, (readME().concat([e])).map((x) => JSON.stringify(x)).join("\n") + "\n");
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // S7: query_memory 语义 hybrid 排序（关键词打平，语义决定顺序）
+  // ───────────────────────────────────────────────────────────────────────────
+  section("[S7] query_memory 语义 hybrid 排序");
+  {
+    clearME();
+    // 两条都含关键词 "gradient"（kw 打平=1）；向量不同 → 仅语义能决定排序。
+    // 故意先 seed 语义较弱的 mix：语义失效时稳定排序会把 mix 排前 → 供 Task 14 反假绿。
+    seedEntry({ id: "exp-mix", timestamp: "t", title: "mixed gradient sort", description: "gradient plus sorting", outcome: "success", tags: ["gradient"], source: "auto", code: "mix()", embedding: [1, 0, 0, 0, 1, 0], embeddingModel: "fake-embed", embeddingDim: 6 });
+    seedEntry({ id: "exp-grad", timestamp: "t", title: "gradient specialist", description: "pure gradient work", outcome: "success", tags: ["gradient"], source: "auto", code: "grad()", embedding: [2, 0, 0, 0, 0, 0], embeddingModel: "fake-embed", embeddingDim: 6 });
+    // 查询 "gradient" → 桩向量 [1,0,0,0,0,0]：cos(grad)=1.0 > cos(mix)=0.707；kw 两者都=1
+    const res = await tools["query_memory"].execute("c", { query: "gradient", limit: 5 }, undefined, () => {}, mockCtx);
+    const text = res?.content?.[0]?.text ?? "";
+    const gradPos = text.indexOf("gradient specialist");
+    const mixPos = text.indexOf("mixed gradient sort");
+    check("两条都命中", gradPos !== -1 && mixPos !== -1, text);
+    check("语义更贴近的 specialist 排在 mix 之前", gradPos < mixPos, `grad=${gradPos} mix=${mixPos}`);
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // S8: provider 不可用（待激活态）→ 退纯关键词，仍可检索
+  // ───────────────────────────────────────────────────────────────────────────
+  section("[S8] provider 未配置 → 关键词降级");
+  {
+    clearME();
+    seedEntry({ id: "exp-fft", timestamp: "t", title: "fourier transform run", description: "spectral via fourier", outcome: "success", tags: ["fourier"], source: "auto", code: "fft()" });
+    const savedBase = process.env.OPENAI_BASE_URL;
+    const savedModel = process.env.EMBEDDING_MODEL;
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.EMBEDDING_MODEL;
+    const res = await tools["query_memory"].execute("c", { query: "fourier", limit: 5 }, undefined, () => {}, mockCtx);
+    const text = res?.content?.[0]?.text ?? "";
+    check("无 provider 仍按关键词命中 fourier", text.includes("fourier transform run"), text);
+    process.env.OPENAI_BASE_URL = savedBase;
+    process.env.EMBEDDING_MODEL = savedModel;
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // S9: 维度/模型不匹配 → 该条跳过语义分（不崩），仍可关键词命中
+  // ───────────────────────────────────────────────────────────────────────────
+  section("[S9] 向量维度不匹配不崩");
+  {
+    clearME();
+    seedEntry({ id: "exp-mm", timestamp: "t", title: "matrix mismatch", description: "old vector dim 3", outcome: "success", tags: ["matrix"], source: "auto", embedding: [1, 2, 3], embeddingModel: "old-model", embeddingDim: 3, code: "m()" });
+    const res = await tools["query_memory"].execute("c", { query: "matrix", limit: 5 }, undefined, () => {}, mockCtx);
+    const text = res?.content?.[0]?.text ?? "";
+    check("维度不匹配条目仍关键词命中（无异常）", text.includes("matrix mismatch"), text);
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // S10: LLM 抽取失败（stopReason error）→ 仍归档，key_metrics 空
+  // ───────────────────────────────────────────────────────────────────────────
+  section("[S10] LLM 抽取失败不阻断归档");
+  {
+    clearME();
+    llmQueue = [stopErrorMsg("model-down")];
+    await fireToolResult({ code: "compute_sort([3,1,2])", text: "sorted=[1,2,3]\n[ok, 7ms]" });
+    const rows = readME();
+    check("仍写入 1 条", rows.length === 1, `len=${rows.length}`);
+    check("outcome=success", rows[0]?.outcome === "success", "");
+    check("key_metrics 空/缺省", !rows[0]?.key_metrics || Object.keys(rows[0].key_metrics).length === 0, JSON.stringify(rows[0]?.key_metrics));
+    check("description 回退为 stdout 首行", (rows[0]?.description ?? "").includes("sorted=[1,2,3]"), JSON.stringify(rows[0]?.description));
+  }
+
   cleanupAndExit();
 }
 
