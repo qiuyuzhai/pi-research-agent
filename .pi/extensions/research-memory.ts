@@ -393,14 +393,12 @@ function selectRelevant<T extends { content?: string; description?: string; titl
 		.map(({ entry }) => entry);
 }
 
-function buildMemoryContext(query: string): string {
+async function buildMemoryContext(query: string, signal: AbortSignal | undefined): Promise<string> {
 	const episodic = loadEntries<EpisodicEntry>(M_I_FILE);
-	const experiments = loadEntries<ExperimentEntry>(M_E_FILE);
-
-	if (episodic.length === 0 && experiments.length === 0) return "";
-
 	const relevantEpisodic = selectRelevant(episodic, query, MAX_INJECT_EPISODIC);
-	const relevantExperiments = selectRelevant(experiments, query, MAX_INJECT_EXPERIMENTS);
+	const relevantExperiments = await hybridSearchExperiments(query, MAX_INJECT_EXPERIMENTS, signal);
+
+	if (relevantEpisodic.length === 0 && relevantExperiments.length === 0) return "";
 
 	const lines: string[] = ["<research_memory>"];
 
@@ -414,7 +412,7 @@ function buildMemoryContext(query: string): string {
 	if (relevantExperiments.length > 0) {
 		lines.push("## M_E: Experiment Memory");
 		for (const e of relevantExperiments) {
-			lines.push(`- [${e.outcome}] **${e.title}**: ${e.description}`);
+			lines.push(`- ${e.is_best ? "★ " : ""}[${e.outcome}] **${e.title}**: ${e.description}`);
 			if (e.result) lines.push(`  → ${e.result}`);
 		}
 	}
@@ -424,11 +422,11 @@ function buildMemoryContext(query: string): string {
 }
 
 export default function researchMemoryExtension(pi: ExtensionAPI) {
-	pi.on("before_agent_start", async (event) => {
-		const ctx = buildMemoryContext(event.prompt.slice(0, 300));
-		if (!ctx) return;
+	pi.on("before_agent_start", async (event, ctx) => {
+		const memCtx = await buildMemoryContext(event.prompt.slice(0, 300), ctx.signal);
+		if (!memCtx) return;
 		return {
-			systemPrompt: `${event.systemPrompt}\n\n${ctx}`,
+			systemPrompt: `${event.systemPrompt}\n\n${memCtx}`,
 		};
 	});
 
@@ -518,7 +516,24 @@ export default function researchMemoryExtension(pi: ExtensionAPI) {
 			),
 			tags: Type.Array(Type.String(), { description: "Keywords for future retrieval" }),
 		}),
-		async execute(_id, params) {
+		async execute(_id, params, signal) {
+			const hash = params.code ? codeHash(params.code) : undefined;
+			let embedding: number[] | undefined;
+			let embeddingModel: string | undefined;
+			let embeddingDim: number | undefined;
+			const provider = resolveEmbeddingProvider();
+			if (provider) {
+				const r = await embed(
+					buildEmbedText({ title: params.title, description: params.description, tags: params.tags }),
+					provider,
+					signal,
+				);
+				if (r) {
+					embedding = r.vector;
+					embeddingModel = r.model;
+					embeddingDim = r.dim;
+				}
+			}
 			const entry: ExperimentEntry = {
 				id: generateId("exp"),
 				timestamp: new Date().toISOString(),
@@ -529,6 +544,11 @@ export default function researchMemoryExtension(pi: ExtensionAPI) {
 				result: params.result,
 				outcome: params.outcome,
 				tags: params.tags,
+				source: "manual",
+				codeHash: hash,
+				embedding,
+				embeddingModel,
+				embeddingDim,
 			};
 			writeEntry(M_E_FILE, entry);
 			return {
@@ -595,16 +615,15 @@ export default function researchMemoryExtension(pi: ExtensionAPI) {
 				return;
 			}
 			const episodic = loadEntries<EpisodicEntry>(M_I_FILE);
-			const experiments = loadEntries<ExperimentEntry>(M_E_FILE);
 			const matchedEp = selectRelevant(episodic, query, 5);
-			const matchedEx = selectRelevant(experiments, query, 3);
+			const matchedEx = await hybridSearchExperiments(query, 3, ctx.signal);
 
 			const lines = [`Search: "${query}" → ${matchedEp.length} M_I + ${matchedEx.length} M_E`];
 			for (const e of matchedEp) {
 				lines.push(`[M_I/${e.type}/${e.outcome}] ${e.content.slice(0, 100)}`);
 			}
 			for (const e of matchedEx) {
-				lines.push(`[M_E/${e.outcome}] ${e.title}: ${e.description.slice(0, 80)}`);
+				lines.push(`[M_E/${e.outcome}]${e.is_best ? " ★" : ""} ${e.title}: ${e.description.slice(0, 80)}`);
 			}
 			ctx.ui.notify(lines.join("\n"), "info");
 		},

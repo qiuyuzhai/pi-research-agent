@@ -447,6 +447,41 @@ async function main() {
     check("notify 报告回填数", notifications.some((n) => n.includes("Re-embedded 2")), JSON.stringify(notifications));
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // S13: save_experiment 手动归档 → source=manual + codeHash + embedding
+  // ───────────────────────────────────────────────────────────────────────────
+  section("[S13] save_experiment 手动归档");
+  {
+    clearME();
+    await tools["save_experiment"].execute(
+      "c",
+      { title: "manual GD", description: "gradient descent manual", code: "manual_gd()", outcome: "success", tags: ["gradient"] },
+      undefined,
+      () => {},
+      mockCtx,
+    );
+    const rows = readME();
+    check("写入 1 条", rows.length === 1, `len=${rows.length}`);
+    check("source=manual", rows[0]?.source === "manual", JSON.stringify(rows[0]?.source));
+    check("codeHash 非空", typeof rows[0]?.codeHash === "string" && rows[0].codeHash.length > 0, "");
+    check("embedding 已写入(dim=6)", Array.isArray(rows[0]?.embedding) && rows[0].embedding.length === 6, JSON.stringify(rows[0]?.embedding));
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // S14: before_agent_start 注入 M_E（★best 前置）
+  // ───────────────────────────────────────────────────────────────────────────
+  section("[S14] before_agent_start 注入记忆");
+  {
+    clearME();
+    seedEntry({ id: "exp-inj", timestamp: "t", title: "matrix multiply best", description: "fast matrix multiply", outcome: "success", tags: ["matrix"], source: "auto", is_best: true, code: "mm()" });
+    const handler = hooks["before_agent_start"][0];
+    const out = await handler({ type: "before_agent_start", prompt: "help me with matrix multiply", systemPrompt: "BASE_PROMPT", systemPromptOptions: {} }, mockCtx);
+    const sp = out?.systemPrompt ?? "";
+    check("返回拼接后的 systemPrompt", sp.startsWith("BASE_PROMPT"), sp.slice(0, 40));
+    check("注入含 research_memory 区块", sp.includes("<research_memory>"), "");
+    check("注入命中 matrix multiply best", sp.includes("matrix multiply best"), "");
+  }
+
   cleanupAndExit();
 }
 
