@@ -61,12 +61,15 @@ export function cosine(a: number[], b: number[]): number {
 }
 
 export function hybridScore(
-	_kwScoreNorm: number,
-	_semScore: number | null,
-	_isBest: boolean,
-	_weights: HybridWeights = DEFAULT_WEIGHTS,
+	kwScoreNorm: number,
+	semScore: number | null,
+	isBest: boolean,
+	weights: HybridWeights = DEFAULT_WEIGHTS,
 ): number {
-	throw new Error("not implemented: hybridScore");
+	// semScore === null（无可比向量）→ 退纯关键词；否则按权重线性融合。
+	const base =
+		semScore === null ? kwScoreNorm : weights.kw * kwScoreNorm + weights.sem * semScore;
+	return base + (isBest ? weights.bestBoost : 0);
 }
 
 export function codeHash(_code: string): string {

@@ -78,6 +78,23 @@ assert("空向量守卫 = 0", cosine([], []), 0);
 assert("长度不等守卫 = 0", cosine([1, 2], [1, 2, 3]), 0);
 assert("零向量守卫 = 0", cosine([0, 0], [1, 1]), 0);
 
+// ── [2] hybridScore ──────────────────────────────────────────────────────────
+console.log("\n[2] hybridScore");
+// semScore=null → 纯关键词（kwNorm 原样），无 boost
+assert("sem=null, 非best → kwNorm 原样", hybridScore(0.6, null, false), 0.6);
+// semScore=null + is_best → + bestBoost(0.25)
+assert("sem=null, best → +0.25", hybridScore(0.6, null, true), 0.85);
+// 融合：0.5*0.4 + 0.5*0.8 = 0.6
+assertApprox("融合 kw=0.4 sem=0.8 → 0.6", hybridScore(0.4, 0.8, false), 0.6);
+// 融合 + best
+assertApprox("融合 + best → 0.85", hybridScore(0.4, 0.8, true), 0.85);
+// 自定义权重
+assert(
+  "自定义权重 kw=1 sem=0 → 纯 kw",
+  hybridScore(0.7, 0.9, false, { kw: 1, sem: 0, bestBoost: 0 }),
+  0.7,
+);
+
 // ── 汇总 ──────────────────────────────────────────────────────────────────────
 const total = passed + failed;
 console.log("\n" + "─".repeat(50));
