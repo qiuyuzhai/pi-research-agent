@@ -116,6 +116,56 @@ assertTrue(
 );
 assertTrue("hash 是非空字符串", typeof codeHash("x=1") === "string" && codeHash("x=1").length > 0);
 
+// ── [4] resolveEmbeddingProvider ─────────────────────────────────────────────
+console.log("\n[4] resolveEmbeddingProvider");
+withEnv({ OPENAI_BASE_URL: "http://localhost:11434/v1", EMBEDDING_MODEL: "bge-m3" }, () => {
+  const p = resolveEmbeddingProvider();
+  assert("base+model 齐 → 非 null", p !== null, true);
+  assert("baseURL 正确", p?.baseURL, "http://localhost:11434/v1");
+  assert("model 正确", p?.model, "bge-m3");
+  assert("无 key → apiKey 空串", p?.apiKey, "");
+});
+withEnv(
+  { OPENAI_BASE_URL: "http://localhost:11434/v1/", EMBEDDING_MODEL: "bge-m3", OPENAI_API_KEY: "sk-x" },
+  () => {
+    const p = resolveEmbeddingProvider();
+    assert("尾斜杠被去除", p?.baseURL, "http://localhost:11434/v1");
+    assert("apiKey 透传", p?.apiKey, "sk-x");
+  },
+);
+withEnv({ EMBEDDING_MODEL: "bge-m3" }, () => {
+  assert("缺 baseURL → null", resolveEmbeddingProvider(), null);
+});
+withEnv({ OPENAI_BASE_URL: "http://x/v1" }, () => {
+  assert("缺 model → null", resolveEmbeddingProvider(), null);
+});
+withEnv({}, () => {
+  assert("全缺（待激活态）→ null", resolveEmbeddingProvider(), null);
+});
+
+// ── [5] normalizeEmbeddingResponse ───────────────────────────────────────────
+console.log("\n[5] normalizeEmbeddingResponse");
+assertTrue(
+  "合法响应 → number[]",
+  JSON.stringify(
+    normalizeEmbeddingResponse({ data: [{ embedding: [0.1, 0.2, 0.3] }], model: "m" }),
+  ) === JSON.stringify([0.1, 0.2, 0.3]),
+);
+assert("data 空数组 → null", normalizeEmbeddingResponse({ data: [] }), null);
+assert("无 data 字段 → null", normalizeEmbeddingResponse({}), null);
+assert("null → null", normalizeEmbeddingResponse(null), null);
+assert("字符串 → null", normalizeEmbeddingResponse("bad"), null);
+assert(
+  "embedding 含非数字 → null",
+  normalizeEmbeddingResponse({ data: [{ embedding: [0.1, "x"] }] }),
+  null,
+);
+assert(
+  "embedding 空数组 → null",
+  normalizeEmbeddingResponse({ data: [{ embedding: [] }] }),
+  null,
+);
+
 // ── 汇总 ──────────────────────────────────────────────────────────────────────
 const total = passed + failed;
 console.log("\n" + "─".repeat(50));

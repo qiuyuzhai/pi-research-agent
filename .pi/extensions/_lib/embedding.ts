@@ -31,19 +31,50 @@ export const DEFAULT_WEIGHTS: HybridWeights = { kw: 0.5, sem: 0.5, bestBoost: 0.
 const EMBED_TIMEOUT_MS = 5000;
 
 export function resolveEmbeddingProvider(): EmbeddingProvider | null {
-	throw new Error("not implemented: resolveEmbeddingProvider");
+	const baseURL = process.env["OPENAI_BASE_URL"];
+	const model = process.env["EMBEDDING_MODEL"];
+	if (!baseURL || !model) return null; // 待激活态：任一必需项缺失即明确返回 null
+	const apiKey = process.env["OPENAI_API_KEY"] ?? ""; // 本地服务常无需 key
+	return { baseURL: baseURL.replace(/\/+$/, ""), apiKey, model };
 }
 
-export function normalizeEmbeddingResponse(_json: unknown): number[] | null {
-	throw new Error("not implemented: normalizeEmbeddingResponse");
+export function normalizeEmbeddingResponse(json: unknown): number[] | null {
+	if (typeof json !== "object" || json === null) return null;
+	const data = (json as Record<string, unknown>)["data"];
+	if (!Array.isArray(data) || data.length === 0) return null;
+	const first = data[0];
+	if (typeof first !== "object" || first === null) return null;
+	const emb = (first as Record<string, unknown>)["embedding"];
+	if (!Array.isArray(emb) || emb.length === 0) return null;
+	if (!emb.every((x) => typeof x === "number" && Number.isFinite(x))) return null;
+	return emb as number[];
 }
 
 export async function embed(
-	_text: string,
-	_provider: EmbeddingProvider,
-	_signal?: AbortSignal,
+	text: string,
+	provider: EmbeddingProvider,
+	signal?: AbortSignal,
 ): Promise<EmbedResult | null> {
-	throw new Error("not implemented: embed");
+	try {
+		const localTimeout = AbortSignal.timeout(EMBED_TIMEOUT_MS);
+		const combined = signal ? AbortSignal.any([localTimeout, signal]) : localTimeout;
+		const res = await fetch(`${provider.baseURL}/embeddings`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				...(provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {}),
+			},
+			body: JSON.stringify({ model: provider.model, input: text }),
+			signal: combined,
+		});
+		if (!res.ok) return null;
+		const json: unknown = await res.json();
+		const vector = normalizeEmbeddingResponse(json);
+		if (!vector) return null;
+		return { vector, model: provider.model, dim: vector.length };
+	} catch {
+		return null; // 网络/超时/解析失败 → 调用方退关键词
+	}
 }
 
 export function cosine(a: number[], b: number[]): number {
@@ -89,6 +120,3 @@ export function codeHash(code: string): string {
 	}
 	return h.toString(16);
 }
-
-// EMBED_TIMEOUT_MS 在 embed 实现后引用；此处显式 void 防 unused（实现 embed 时移除）。
-void EMBED_TIMEOUT_MS;
