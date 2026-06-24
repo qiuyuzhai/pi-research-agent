@@ -107,6 +107,36 @@ export function buildEmbedText(
 	return parts.filter((p) => p && p.trim()).join(". ");
 }
 
+// ── FR-4: 解析 run_python 的 tool_result 文本（research-kernel.ts formatResult 输出）──
+// 返回 null = RUNNING / 不可解析 → 跳过归档。
+export interface KernelOutcome {
+	outcome: ExperimentOutcome;
+	stdout: string;
+	durationMs?: number;
+}
+
+export function parseKernelResult(text: string, isError: boolean): KernelOutcome | null {
+	const trimmed = text.trim();
+	if (!trimmed) return null;
+	if (trimmed.startsWith("RUNNING:") || trimmed.startsWith("STILL RUNNING:")) return null;
+	if (isError) {
+		// kernel 级异常（worker 不可用等）→ inconclusive，全文当 stdout
+		return { outcome: "inconclusive", stdout: trimmed };
+	}
+	const lines = trimmed.split("\n");
+	const last = lines[lines.length - 1];
+	const ok = last.match(/^\[ok,\s*(\d+)ms\]$/);
+	const err = last.match(/^\[error:\s*[^,]+,\s*(\d+)ms\]$/);
+	if (ok) {
+		return { outcome: "success", stdout: lines.slice(0, -1).join("\n").trim(), durationMs: Number(ok[1]) };
+	}
+	if (err) {
+		return { outcome: "failure", stdout: lines.slice(0, -1).join("\n").trim(), durationMs: Number(err[1]) };
+	}
+	// 无 [ok/error] 标记（理论不该出现）→ inconclusive
+	return { outcome: "inconclusive", stdout: trimmed };
+}
+
 function scoreRelevance<T extends { content?: string; description?: string; title?: string; tags?: string[] }>(
 	entry: T,
 	terms: string[],
