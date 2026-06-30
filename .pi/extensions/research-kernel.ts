@@ -41,6 +41,14 @@ type JobResult = {
 
 type RunningHandle = { running: true; id: string };
 
+type WorkerExitInfo = {
+	at: string;
+	code: number | null;
+	signal: string | null;
+	stderr: string;
+	pendingJobs: number;
+};
+
 type ReadyInfo = {
 	python: string;
 	packages: Record<string, string>;
@@ -128,6 +136,18 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
 	});
 }
 
+function formatWorkerExit(info: WorkerExitInfo): string {
+	const cause = info.signal ? `signal ${info.signal}` : `code ${info.code ?? "unknown"}`;
+	const stderr = info.stderr.trim();
+	const lines = [
+		`KERNEL AUTO-RESTARTED: previous Python worker exited at ${info.at} (${cause}).`,
+		"Python namespace state was lost; re-run imports, variable setup, or restore saved experiment artifacts before relying on prior state.",
+		`Pending jobs failed during exit: ${info.pendingJobs}.`,
+	];
+	if (stderr) lines.push(`Last worker stderr:\n${stderr}`);
+	return lines.join("\n");
+}
+
 export class KernelManager {
 	child: ChildProcessWithoutNullStreams | null = null;
 	pending = new Map<string, PendingJob>();
@@ -135,6 +155,9 @@ export class KernelManager {
 	jobCounter = 0;
 	jobsRun = 0;
 	stderrBuffer = "";
+	intentionalStops = new WeakSet<ChildProcessWithoutNullStreams>();
+	lastWorkerExit: WorkerExitInfo | null = null;
+	lastRestartNotice: string | null = null;
 	readonly workerPath: string;
 	readonly cwd: string;
 
@@ -146,23 +169,47 @@ export class KernelManager {
 	ensureStarted(): Promise<ReadyInfo> {
 		if (this.readyPromise) return this.readyPromise;
 
-		this.readyPromise = new Promise<ReadyInfo>((resolve, reject) => {
+		this.stderrBuffer = "";
+
+		let readySettled = false;
+		let readyPromise: Promise<ReadyInfo>;
+		readyPromise = new Promise<ReadyInfo>((resolve, reject) => {
 			const child = spawn("uv", ["run", "--script", this.workerPath], {
 				cwd: this.cwd,
 				stdio: ["pipe", "pipe", "pipe"],
 			});
 			this.child = child;
 
+			const invalidateIfCurrent = () => {
+				if (this.child === child) this.child = null;
+				if (this.readyPromise === readyPromise) this.readyPromise = null;
+			};
+
+			const resolveReady = (ready: ReadyInfo) => {
+				if (readySettled) return;
+				readySettled = true;
+				clearTimeout(timer);
+				resolve(ready);
+			};
+
+			const rejectReady = (err: Error) => {
+				if (readySettled) return;
+				readySettled = true;
+				clearTimeout(timer);
+				invalidateIfCurrent();
+				reject(err);
+			};
+
 			const timer = setTimeout(() => {
-				reject(new Error(`worker ready timeout after ${READY_TIMEOUT_MS}ms; stderr:\n${this.stderrBuffer}`));
+				child.kill();
+				rejectReady(new Error(`worker ready timeout after ${READY_TIMEOUT_MS}ms; stderr:\n${this.stderrBuffer}`));
 			}, READY_TIMEOUT_MS);
 
 			const rl = createInterface({ input: child.stdout });
 			rl.on("line", (line) => {
 				const parsed = this.onLine(line);
 				if (parsed && parsed.type === "ready") {
-					clearTimeout(timer);
-					resolve({ python: parsed.python ?? "", packages: parsed.packages ?? {} });
+					resolveReady({ python: parsed.python ?? "", packages: parsed.packages ?? {} });
 				}
 			});
 
@@ -171,18 +218,19 @@ export class KernelManager {
 			});
 
 			child.on("error", (err) => {
-				clearTimeout(timer);
-				reject(err);
+				rejectReady(err);
 			});
-			child.on("exit", (code) => {
+			child.on("exit", (code, signal) => {
 				clearTimeout(timer);
-				// 子进程退出: 标记所有未结算 job 为 error，避免调用方永久挂起。
+				// 子进程退出: 标记所有未结算 job 为 error，避免调用方永久挂起；下次调用自动重启。
 				this.failAllPending(`worker exited with code ${code}`);
-				this.child = null;
+				invalidateIfCurrent();
+				if (!readySettled) rejectReady(new Error(`worker exited before ready with code ${code}`));
 			});
 		});
+		this.readyPromise = readyPromise;
 
-		return this.readyPromise;
+		return readyPromise;
 	}
 
 	async exec(code: string, signal?: AbortSignal, softTimeoutMs = DEFAULT_EXEC_TIMEOUT_MS): Promise<JobResult | RunningHandle> {
