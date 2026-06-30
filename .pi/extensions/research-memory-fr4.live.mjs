@@ -77,9 +77,6 @@ function baseMsg(extra) {
 function extractionMsg(obj) {
   return baseMsg({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify(obj) }] });
 }
-function rawMsg(text) {
-  return baseMsg({ stopReason: "stop", content: [{ type: "text", text }] });
-}
 function stopErrorMsg(reason) {
   return baseMsg({ stopReason: "error", errorMessage: reason, content: [] });
 }
