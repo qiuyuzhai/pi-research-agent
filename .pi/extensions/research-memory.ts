@@ -16,7 +16,7 @@ import type { Context, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { codeHash, cosine, embed, hybridScore, resolveEmbeddingProvider } from "./_lib/embedding.ts";
 
-const MEMORY_DIR = join(homedir(), ".pi", "research-memory");
+const MEMORY_DIR = process.env["PI_RESEARCH_MEMORY_DIR"] ?? join(homedir(), ".pi", "research-memory");
 const M_I_FILE = join(MEMORY_DIR, "episodic.jsonl");
 const M_E_FILE = join(MEMORY_DIR, "experiments.jsonl");
 
@@ -300,7 +300,7 @@ export async function archiveExperiment(
 	return entry;
 }
 
-// ── FR-4: hybrid 検索 M_E（関键词永远在线作基线，语义作增强）──
+// ── FR-4: hybrid 检索 M_E（关键词永远在线作基线，语义作增强）──
 export async function hybridSearchExperiments(
 	query: string,
 	limit: number,
