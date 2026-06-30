@@ -39,3 +39,7 @@ plans/
 .pi/hf-sessions/
 .pi/hf-sessions-backup/
 collect.sh
+
+# Tooling index & local pi settings
+.codegraph/
+.pi/settings.json
